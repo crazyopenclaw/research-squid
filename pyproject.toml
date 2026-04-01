@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "hive-research"
+version = "0.1.0"
+description = "Two-tier autonomous research system — Tier 1 proposes, Tier 2 validates, DAG remembers"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic>=2.0",
+    "neo4j>=5.0",
+    "psycopg2-binary",
+    "langgraph>=0.2",
+    "langchain-anthropic",
+    "langchain-core>=0.3",
+    "httpx",
+    "beautifulsoup4",
+    "sentence-transformers",
+    "celery[redis]",
+    "langfuse",
+    "mcp",
+    "uvicorn",
+    "redis",
+]
+
+[project.optional-dependencies]
+gpu = ["torch", "transformers"]
+bio = ["rdkit", "biopython"]
+
+[project.scripts]
+hive-coordinator = "hive.coordinator.app:run"
+hive-worker = "hive.agents.tier1:run_worker"
+hive-mcp = "hive.mcp.server:run"
