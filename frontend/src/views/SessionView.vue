@@ -15,14 +15,19 @@
 
     <!-- Main Content -->
     <div class="content">
-      <!-- Left: Session Status + Events -->
+      <!-- Left: Graph Visualization -->
+      <div class="panel graph">
+        <GraphPanel :sessionId="sessionId" />
+      </div>
+
+      <!-- Center: Status + Events -->
       <div class="panel left">
         <StatusPanel :status="store.status" :session="store.session" />
         <EventLog :events="store.events" />
       </div>
 
-      <!-- Center: Workflow Step Content -->
-      <div class="panel center">
+      <!-- Right: Workflow Content + Agent Inspector -->
+      <div class="panel right">
         <AgentPanel v-if="store.status.workflow_step >= 3"
           :sessionId="sessionId" />
         <ExperimentPanel v-if="store.status.workflow_step >= 4"
@@ -31,10 +36,6 @@
           :contradictions="store.status.contradictions" />
         <ReportPanel v-if="store.status.workflow_step >= 6"
           :sessionId="sessionId" />
-      </div>
-
-      <!-- Right: Agent Inspector -->
-      <div class="panel right">
         <AgentInspector :sessionId="sessionId" />
       </div>
     </div>
@@ -47,6 +48,7 @@ import { useRoute } from 'vue-router'
 import { useSessionStore } from '../store/session.js'
 import WorkflowSteps from '../components/WorkflowSteps.vue'
 import BudgetBar from '../components/BudgetBar.vue'
+import GraphPanel from '../components/GraphPanel.vue'
 import StatusPanel from '../components/StatusPanel.vue'
 import EventLog from '../components/EventLog.vue'
 import AgentPanel from '../components/AgentPanel.vue'
@@ -72,7 +74,7 @@ onUnmounted(() => store.disconnect())
 .header-right { flex: 0 0 auto; }
 .content { display: flex; flex: 1; overflow: hidden; }
 .panel { overflow-y: auto; padding: 16px; }
+.panel.graph { flex: 2; padding: 0; overflow: hidden; border-right: 1px solid #eee; }
 .left { flex: 0 0 280px; border-right: 1px solid #eee; }
-.center { flex: 1; }
-.right { flex: 0 0 320px; border-left: 1px solid #eee; }
+.right { flex: 0 0 380px; border-left: 1px solid #eee; }
 </style>
