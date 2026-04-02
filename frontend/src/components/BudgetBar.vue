@@ -1,18 +1,11 @@
 <template>
   <div class="budget-bar">
     <div class="budget-item">
-      <span class="label">LLM</span>
+      <span class="label">Budget</span>
       <div class="bar">
-        <div class="fill" :style="{ width: llmPct + '%', background: llmColor }"></div>
+        <div class="fill" :style="{ width: pct + '%', background: color }"></div>
       </div>
-      <span class="value">${{ budget.llm_spent?.toFixed(2) }} / ${{ budget.llm_budget }}</span>
-    </div>
-    <div class="budget-item">
-      <span class="label">Compute</span>
-      <div class="bar">
-        <div class="fill" :style="{ width: computePct + '%', background: computeColor }"></div>
-      </div>
-      <span class="value">${{ budget.compute_spent?.toFixed(2) }} / ${{ budget.compute_budget }}</span>
+      <span class="value">${{ totalSpent.toFixed(2) }} / ${{ totalBudget.toFixed(2) }}</span>
     </div>
   </div>
 </template>
@@ -20,10 +13,17 @@
 <script setup>
 import { computed } from 'vue'
 const props = defineProps({ budget: { type: Object, default: () => ({}) } })
-const llmPct = computed(() => props.budget.llm_budget ? (props.budget.llm_spent / props.budget.llm_budget) * 100 : 0)
-const computePct = computed(() => props.budget.compute_budget ? (props.budget.compute_spent / props.budget.compute_budget) * 100 : 0)
-const llmColor = computed(() => llmPct.value > 90 ? '#d32f2f' : llmPct.value > 70 ? '#f57c00' : '#111')
-const computeColor = computed(() => computePct.value > 90 ? '#d32f2f' : computePct.value > 70 ? '#f57c00' : '#111')
+const totalSpent = computed(() =>
+  Number(props.budget.spent ?? 0)
+  || (Number(props.budget.llm_spent ?? 0) + Number(props.budget.compute_spent ?? 0))
+)
+const totalBudget = computed(() =>
+  Number(props.budget.total ?? 0)
+  || Number(props.budget.budget ?? 0)
+  || Number(props.budget.llm_budget ?? 0) + Number(props.budget.compute_budget ?? 0)
+)
+const pct = computed(() => totalBudget.value ? (totalSpent.value / totalBudget.value) * 100 : 0)
+const color = computed(() => pct.value > 90 ? '#d32f2f' : pct.value > 70 ? '#f57c00' : '#111')
 </script>
 
 <style scoped>

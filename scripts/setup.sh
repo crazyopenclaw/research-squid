@@ -5,8 +5,8 @@ set -e
 echo "=== ResearchSquid Dev Setup ==="
 
 # Check prerequisites
-command -v python3 >/dev/null 2>&1 || { echo "Python 3.11+ required"; exit 1; }
-command -v node >/dev/null 2>&1 || { echo "Node.js 18+ required (for MCP client testing)"; }
+command -v python3 >/dev/null 2>&1 || { echo "Python 3.12+ required"; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "Node.js 18+ required"; exit 1; }
 
 # Create virtual environment if missing
 if [ ! -d ".venv" ]; then
@@ -16,7 +16,8 @@ fi
 
 # Activate and install
 source .venv/bin/activate
-pip install -e ".[gpu,bio]" 2>/dev/null || pip install -e .
+pip install -e backend
+npm install --prefix frontend
 
 # Copy .env if missing
 if [ ! -f ".env" ]; then
@@ -27,12 +28,9 @@ fi
 echo ""
 echo "=== Setup Complete ==="
 echo ""
-echo "Start services:"
-echo "  docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d"
+echo "Start everything:"
+echo "  python scripts/dev.py"
 echo ""
-echo "Or run coordinator locally:"
-echo "  source .venv/bin/activate"
-echo "  uvicorn squid.coordinator.app:app --reload --port 8000"
-echo ""
-echo "Health check:"
-echo "  curl http://localhost:8000/health"
+echo "Or individually:"
+echo "  Backend:  cd backend && python run_server.py"
+echo "  Frontend: cd frontend && npm run dev"

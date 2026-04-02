@@ -11,8 +11,8 @@ def main():
     print("=== ResearchSquid Dev Setup ===\n")
 
     # Check Python
-    if sys.version_info < (3, 11):
-        print("ERROR: Python 3.11+ required")
+    if sys.version_info < (3, 12):
+        print("ERROR: Python 3.12+ required")
         sys.exit(1)
 
     # Create venv if missing
@@ -29,9 +29,11 @@ def main():
         pip = os.path.join(venv_dir, "bin", "pip")
         python = os.path.join(venv_dir, "bin", "python")
 
-    # Install Python deps
+    # Install Python deps from the backend package
+    root_dir = os.path.join(os.path.dirname(__file__), "..")
+    backend_dir = os.path.join(root_dir, "backend")
     print("Installing Python dependencies...")
-    subprocess.run([pip, "install", "-e", "."], check=True)
+    subprocess.run([pip, "install", "-e", backend_dir], check=True)
 
     # Install frontend deps
     frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
@@ -39,8 +41,49 @@ def main():
     print("Installing frontend dependencies...")
     subprocess.run([npm_cmd, "install"], cwd=frontend_dir, check=True)
 
+    # Install OpenCode (agent workspace AI coding assistant)
+    if not shutil.which("opencode"):
+        print("Installing OpenCode...")
+        try:
+            subprocess.run(
+                [npm_cmd, "install", "-g", "opencode-ai@latest"],
+                check=True,
+            )
+            print("OpenCode installed successfully.")
+        except Exception as e:
+            print(f"WARNING: Could not install OpenCode automatically: {e}")
+            print("Install manually: npm install -g opencode-ai@latest")
+            print("(OpenCode is required for the agent workspace layer)")
+    else:
+        print("OpenCode already installed.")
+
+    # Build sandbox image when Docker is available so experiments work on first run
+    docker_available = False
+    try:
+        docker_available = subprocess.run(
+            ["docker", "--version"],
+            capture_output=True,
+            text=True,
+        ).returncode == 0
+    except OSError:
+        docker_available = False
+
+    if docker_available:
+        print("Ensuring sandbox image exists...")
+        subprocess.run(
+            [
+                "docker",
+                "build",
+                "-t",
+                "squid-sandbox:latest",
+                "-f",
+                os.path.join(backend_dir, "Dockerfile.sandbox"),
+                backend_dir,
+            ],
+            check=False,
+        )
+
     # Copy .env if missing
-    root_dir = os.path.join(os.path.dirname(__file__), "..")
     env_file = os.path.join(root_dir, ".env")
     env_example = os.path.join(root_dir, ".env.example")
     if not os.path.exists(env_file) and os.path.exists(env_example):
@@ -55,7 +98,7 @@ def main():
         print("  python scripts/dev.py")
     print()
     print("Or individually:")
-    print("  Backend:  python -m uvicorn squid.coordinator.app:app --reload --port 8000")
+    print("  Backend:  cd backend && python run_server.py")
     print("  Frontend: cd frontend && npm run dev")
 
 

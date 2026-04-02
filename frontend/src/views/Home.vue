@@ -20,25 +20,27 @@
               <label>Modality</label>
               <select v-model="modality">
                 <option value="general">General Research</option>
-                <option value="llm_optimization">LLM Optimization</option>
-                <option value="drug_discovery">Drug Discovery</option>
-                <option value="engineering_simulation">Engineering Simulation</option>
               </select>
             </div>
             <div class="field half">
               <label>Agents</label>
-              <input type="number" v-model.number="agentCount" min="1" max="25" />
+              <input type="number" v-model.number="agentCount" min="1" max="200" />
             </div>
           </div>
-          <div class="row">
-            <div class="field half">
-              <label>LLM Budget ($)</label>
-              <input type="number" v-model.number="llmBudget" min="1" step="5" />
-            </div>
-            <div class="field half">
-              <label>Compute Budget ($)</label>
-              <input type="number" v-model.number="computeBudget" min="0" step="5" />
-            </div>
+          <div class="field">
+            <label>Domain</label>
+            <input v-model="domain"
+              placeholder="e.g. cancer biology, distributed systems, macroeconomics" />
+          </div>
+          <div class="field">
+            <label>Population Directive</label>
+            <textarea v-model="populationDirective" rows="2"
+              placeholder="e.g. more contrarian, more replication-minded, stronger experimental bias">
+            </textarea>
+          </div>
+          <div class="field">
+            <label>Budget ($)</label>
+            <input type="number" v-model.number="budget" min="0" />
           </div>
           <button type="submit" :disabled="!question || loading">
             {{ loading ? 'Starting...' : 'Start Research' }}
@@ -57,9 +59,10 @@ import { api } from '../api/index.js'
 const router = useRouter()
 const question = ref('')
 const modality = ref('general')
+const domain = ref('general research')
+const populationDirective = ref('')
 const agentCount = ref(5)
-const llmBudget = ref(20)
-const computeBudget = ref(20)
+const budget = ref(20)
 const loading = ref(false)
 
 async function startSession() {
@@ -68,9 +71,11 @@ async function startSession() {
     const session = await api.startResearch({
       question: question.value,
       modality: modality.value,
+      domain: domain.value,
+      population_directive: populationDirective.value,
       agent_count: agentCount.value,
-      llm_budget_usd: llmBudget.value,
-      compute_budget_usd: computeBudget.value,
+      llm_budget_usd: budget.value,
+      compute_budget_usd: budget.value,
     })
     router.push(`/session/${session.id}`)
   } catch (e) {

@@ -1,20 +1,8 @@
-version: "3.9"
-
 services:
   neo4j:
     ports:
-      - "7474:7474"
       - "7687:7687"
 
   postgres:
     ports:
       - "5432:5432"
-
-  coordinator:
-    volumes:
-      - ./squid:/app/squid
-    command: uvicorn squid.coordinator.app:app --host 0.0.0.0 --port 8000 --reload
-
-  workers:
-    volumes:
-      - ./squid:/app/squid

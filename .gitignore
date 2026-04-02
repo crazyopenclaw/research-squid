@@ -2,7 +2,10 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+.claude/
 *.egg-info/
+.ruff_cache/
+pytest-cache-files-*/
 dist/
 build/
 .venv/
@@ -14,3 +17,6 @@ postgres_data/
 *.log
 node_modules/
 frontend/dist/
+logs/*
+data/
+.kilo/*

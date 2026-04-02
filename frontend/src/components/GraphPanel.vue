@@ -1,358 +1,1116 @@
 <template>
-  <div class="graph-panel" ref="containerRef">
+  <div class="graph-panel">
     <div class="graph-header">
-      <h3>Knowledge DAG</h3>
+      <div class="header-copy">
+        <h3>Research Graph</h3>
+      </div>
       <div class="graph-controls">
-        <button @click="refresh" :disabled="loading">
+        <button 
+          @click="gameViewMode = !gameViewMode" 
+          :class="{ active: gameViewMode }"
+          :title="gameViewMode ? 'Switch to graph view' : 'Switch to game view'"
+        >
+          {{ gameViewMode ? 'Graph' : 'Game' }}
+        </button>
+        <button @click="reportOpen = !reportOpen">
+          {{ reportOpen ? 'Hide Report' : 'Report' }}
+        </button>
+        <button @click="$emit('refresh')" :disabled="loading">
           {{ loading ? 'Loading...' : 'Refresh' }}
         </button>
         <button @click="fitView">Fit</button>
-        <div class="legend">
-          <span class="legend-item finding">Finding</span>
-          <span class="legend-item experiment">Experiment</span>
-          <span class="legend-item cluster">Cluster</span>
-        </div>
       </div>
     </div>
-    <div class="graph-stats">
-      <span>{{ nodeCount }} nodes</span>
-      <span>{{ edgeCount }} edges</span>
-      <span v-if="selectedNode">Selected: {{ selectedNode.label }}</span>
-    </div>
+
     <div ref="graphRef" class="graph-canvas"></div>
 
-    <!-- Selected Node Detail -->
-    <div v-if="selectedNode" class="node-detail">
-      <div class="detail-header">
-        <span class="detail-type" :class="selectedNode.type">{{ selectedNode.type }}</span>
-        <span class="detail-id">{{ selectedNode.id }}</span>
-        <button class="close-btn" @click="selectedNode = null">×</button>
+    <div class="agent-overlays">
+      <div
+        v-for="overlay in overlayItems"
+        :key="overlay.id"
+        class="agent-overlay"
+        :class="{ selected: overlay.id === selectedAgentId }"
+        :style="{ left: `${overlay.left}px`, top: `${overlay.top}px` }"
+      >
+        {{ overlay.text }}
       </div>
-      <div class="detail-body">
-        <div v-if="selectedNode.type === 'Finding'" class="finding-detail">
-          <div class="claim">{{ selectedNode.props.claim }}</div>
-          <div class="meta">
-            <span class="conf-badge" :class="confClass(selectedNode.props.confidence)">
-              {{ (selectedNode.props.confidence * 100).toFixed(0) }}%
-            </span>
-            <span class="evidence">{{ selectedNode.props.evidence_type }}</span>
-            <span class="tier">Tier {{ selectedNode.props.min_source_tier }}</span>
-            <span v-if="selectedNode.props.has_numerical_verification" class="verified">✓ verified</span>
-          </div>
-          <div class="rationale">{{ selectedNode.props.confidence_rationale }}</div>
-          <div class="sources" v-if="selectedNode.props.source_urls?.length">
-            <div v-for="url in selectedNode.props.source_urls.slice(0, 3)" :key="url" class="source-url">
-              {{ url }}
-            </div>
-          </div>
-          <div class="agent-info">
-            Agent: {{ selectedNode.props.agent_id }} | Cycle: {{ selectedNode.props.cycle_posted }}
-          </div>
+    </div>
+
+    <div v-if="reportOpen" class="report-overlay">
+      <div class="report-shell">
+        <div class="report-shell-header">
+          <span>Report</span>
+          <button class="close-btn" @click="reportOpen = false">Close</button>
         </div>
-        <div v-else-if="selectedNode.type === 'Experiment'" class="experiment-detail">
-          <div class="goal">{{ selectedNode.props.goal }}</div>
-          <div class="meta">
-            <span class="status-badge" :class="selectedNode.props.status">
-              {{ selectedNode.props.status }}
-            </span>
-            <span>{{ selectedNode.props.backend_type }}</span>
-          </div>
-        </div>
-        <div v-else class="generic-detail">
-          <pre>{{ JSON.stringify(selectedNode.props, null, 2) }}</pre>
-        </div>
-      </div>
-      <div class="detail-edges" v-if="connectedEdges.length">
-        <h5>Connections</h5>
-        <div v-for="edge in connectedEdges" :key="edge.id" class="edge-item">
-          <span class="edge-type" :class="edge.type.toLowerCase()">{{ edge.type }}</span>
-          <span class="edge-dir">{{ edge.direction }}</span>
-          <span class="edge-other">{{ edge.otherId }}</span>
-          <span v-if="edge.counter_claim" class="counter-claim">
-            Counter: {{ edge.counter_claim }}
-          </span>
-        </div>
+        <ReportPanel :sessionId="sessionId" />
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, unref } from 'vue'
 import { Network } from 'vis-network'
-import { api } from '../api/index.js'
+import ReportPanel from './ReportPanel.vue'
+import { getSquidIconDataUrl } from '../lib/squidIcons.js'
 
 const props = defineProps({
   sessionId: { type: String, required: true },
-  autoRefresh: { type: Boolean, default: true },
-  refreshInterval: { type: Number, default: 10000 },
+  graph: { type: Object, default: () => ({ question: '', nodes: [], edges: [] }) },
+  selectedAgentId: { type: String, default: '' },
+  events: { type: Array, default: () => [] },
+  loading: { type: Boolean, default: false },
 })
 
-const containerRef = ref(null)
+const emit = defineEmits(['select-agent', 'refresh', 'select-station', 'select-edge'])
+
 const graphRef = ref(null)
-const loading = ref(false)
-const nodeCount = ref(0)
-const edgeCount = ref(0)
-const selectedNode = ref(null)
-const connectedEdges = ref([])
-const dagData = ref({ nodes: [], edges: [] })
+const reportOpen = ref(false)
+const gameViewMode = ref(false)
+const overlayItems = ref([])
+const nodePositions = ref({})
+const pinnedNodeIds = ref(new Set())
+const zoomLevel = ref(1)
+const gameViewAgentPositions = ref({})
+const gameViewGhosts = ref([])
+const graphData = computed(() => props.graph || { question: '', nodes: [], edges: [] })
+const normalizedEvents = computed(() => {
+  const source = unref(props.events)
+  if (Array.isArray(source)) return source
+  if (Array.isArray(source?.events)) return source.events
+  if (Array.isArray(source?.value)) return source.value
+  return []
+})
 
 let network = null
-let refreshTimer = null
+let overlayFrame = null
+let overlayTrackingFrame = null
+let layoutStabilized = false
+let dragSelection = []
 
-// Node colors by type
-const NODE_COLORS = {
-  Finding: { background: '#e8f5e9', border: '#2e7d32', highlight: { background: '#c8e6c9', border: '#1b5e20' } },
-  Experiment: { background: '#e3f2fd', border: '#1565c0', highlight: { background: '#bbdefb', border: '#0d47a1' } },
-  ExperimentRun: { background: '#fff3e0', border: '#e65100', highlight: { background: '#ffe0b2', border: '#bf360c' } },
-  Cluster: { background: '#fce4ec', border: '#c62828', highlight: { background: '#f8bbd0', border: '#b71c1c' } },
-  Agent: { background: '#f3e5f5', border: '#7b1fa2', highlight: { background: '#e1bee7', border: '#4a148c' } },
+const EDGE_COLORS = {
+  STARTS_FROM: '#d4d4d4',
+  SUPPORTS: '#2f7d3b',
+  CONTRADICTS: '#bf3a3a',
+  EXTENDS: '#2a6edb',
+  REFUTES: '#c76a16',
+  RUNS_EXPERIMENT: '#e65100',
+  POSTS_FINDING: '#2e7d32',
+  FORMS_HYPOTHESIS: '#7b1fa2',
+  QUESTIONS: '#1565c0',
+  CITES: '#5a6a7a',
 }
 
-// Edge colors by type
-const EDGE_COLORS = {
-  SUPPORTS: '#2e7d32',
-  CONTRADICTS: '#c62828',
-  EXTENDS: '#1565c0',
-  REFUTES: '#e65100',
-  SYNTHESIZES: '#7b1fa2',
-  PRODUCED_BY: '#ff8f00',
-  TESTED: '#00838f',
+const NODE_STYLES = {
+  input: { bg: '#fff8dd', border: '#c6a731', highlightBg: '#fff5c4', highlightBorder: '#a9871a' },
+  agent: { bg: '#e3f2fd', border: '#1565c0', highlightBg: '#bbdefb', highlightBorder: '#0d47a1' },
+  station: { bg: '#f0f4f8', border: '#5a6a7a', highlightBg: '#e2e8f0', highlightBorder: '#3a4a5a' },
+  finding: { bg: '#e8f5e9', border: '#2e7d32', highlightBg: '#c8e6c9', highlightBorder: '#1b5e20' },
+  experiment: { bg: '#fff3e0', border: '#e65100', highlightBg: '#ffe0b2', highlightBorder: '#bf360c' },
+  hypothesis: { bg: '#f3e5f5', border: '#7b1fa2', highlightBg: '#e1bee7', highlightBorder: '#4a148c' },
+  cluster: { bg: '#fafafa', border: '#757575', highlightBg: '#f5f5f5', highlightBorder: '#424242' },
+}
+
+const STATION_POSITIONS = {
+  lab: { x: 450, y: 300 },
+  experiment: { x: 150, y: 300 },
+  archive: { x: -150, y: 300 },
+  center: { x: -450, y: 300 },
+  table: { x: 0, y: -50 },
+}
+
+const INPUT_POSITION = { x: 0, y: -350 }
+
+const EVENT_TO_STATION = {
+  experiment_queued: 'experiment',
+  experiment_started: 'lab',
+  experiment_completed: 'lab',
+  experiment_failed: 'lab',
+  finding_created: 'archive',
+  artifact_created: 'archive',
+  artifact_updated: 'archive',
+  artifact_refuted: 'archive',
+  source_ingested: 'center',
+  source_discovered: 'center',
+  hypothesis_created: 'center',
+  assumption_created: 'center',
+  note_created: 'center',
+  relation_created: 'center',
+  debate_started: 'table',
+  debate_completed: 'table',
+  clusters_computed: 'table',
+  intra_cluster_review_started: 'table',
+  intra_cluster_review_progress: 'table',
+  intra_cluster_review_completed: 'table',
+  inter_cluster_debate_started: 'table',
+  inter_cluster_debate_progress: 'table',
+  inter_cluster_debate_completed: 'table',
+  counter_responses_started: 'table',
+  counter_response_progress: 'table',
+  counter_responses_completed: 'table',
+  adjudication_started: 'table',
+  adjudication_progress: 'table',
+  adjudication_completed: 'table',
+  adjudicating_hypothesis: 'table',
+}
+
+const ACTIVITY_PRIORITY = {
+  table: 10,
+  lab: 8,
+  experiment: 6,
+  archive: 4,
+  center: 2,
+}
+
+const ACTIVITY_LABELS = {
+  experiment_queued: 'Queuing experiment',
+  experiment_started: 'Running experiment',
+  experiment_completed: 'Experiment done',
+  experiment_failed: 'Experiment failed',
+  finding_created: 'Posting finding',
+  artifact_created: 'Creating artifact',
+  artifact_updated: 'Updating artifact',
+  artifact_refuted: 'Refuting artifact',
+  source_ingested: 'Reading source',
+  source_discovered: 'Discovering source',
+  hypothesis_created: 'Forming hypothesis',
+  assumption_created: 'Stating assumption',
+  note_created: 'Writing notes',
+  relation_created: 'Linking claims',
+  debate_started: 'In debate',
+  debate_completed: 'Debate done',
+  clusters_computed: 'Computing clusters',
+  intra_cluster_review_started: 'Intra-cluster review',
+  intra_cluster_review_progress: 'Reviewing cluster',
+  intra_cluster_review_completed: 'Review done',
+  inter_cluster_debate_started: 'Inter-cluster debate',
+  inter_cluster_debate_progress: 'Debating',
+  inter_cluster_debate_completed: 'Debate done',
+  counter_responses_started: 'Preparing counter',
+  counter_response_progress: 'Countering',
+  counter_responses_completed: 'Counter done',
+  adjudication_started: 'Adjudicating',
+  adjudication_progress: 'Judging',
+  adjudication_completed: 'Adjudication done',
+  adjudicating_hypothesis: 'Judging hypothesis',
+}
+
+const PHYSICS_OPTIONS = {
+  enabled: true,
+  solver: 'forceAtlas2Based',
+  stabilization: {
+    enabled: true,
+    iterations: 80,
+    updateInterval: 20,
+  },
+  forceAtlas2Based: {
+    gravitationalConstant: -58,
+    centralGravity: 0.015,
+    springLength: 180,
+    springConstant: 0.03,
+    damping: 0.46,
+    avoidOverlap: 0.9,
+  },
+  minVelocity: 0.45,
+  timestep: 0.4,
+  adaptiveTimestep: true,
+}
+
+function getAgentActivities(agentId, events) {
+  const now = Date.now()
+  const recentWindow = 60000
+  const recentEvents = events.filter(e => {
+    if (e.agent_id !== agentId) return false
+    const eventTime = e.timestamp ? new Date(e.timestamp).getTime() : now
+    return (now - eventTime) < recentWindow
+  })
+  
+  const activities = []
+  const seenStations = new Set()
+  
+  for (const event of recentEvents) {
+    const eventKind = event.kind || event.event_type
+    const station = EVENT_TO_STATION[eventKind]
+    if (station && !seenStations.has(station)) {
+      seenStations.add(station)
+      activities.push({
+        station,
+        eventKind,
+        label: ACTIVITY_LABELS[eventKind] || eventKind,
+        priority: ACTIVITY_PRIORITY[station] || 0,
+        timestamp: event.timestamp
+      })
+    }
+  }
+  
+  if (activities.length === 0) {
+    activities.push({
+      station: 'center',
+      eventKind: 'idle',
+      label: 'idle',
+      priority: 0,
+      timestamp: null
+    })
+  }
+  
+  return activities.sort((a, b) => b.priority - a.priority)
+}
+
+function computeGameViewPositions() {
+  if (!gameViewMode.value) return
+  
+  const agentNodes = graphData.value.nodes.filter(n => n.node_type === 'agent')
+  const positions = {}
+  const ghosts = []
+  const stationAgents = {}
+  
+  agentNodes.forEach((agent) => {
+    const activities = getAgentActivities(agent.id, normalizedEvents.value)
+    const primary = activities[0]
+    const station = primary.station
+    
+    if (!stationAgents[station]) {
+      stationAgents[station] = []
+    }
+    stationAgents[station].push({ agent, activities })
+  })
+  
+  Object.entries(stationAgents).forEach(([station, agentsAtStation]) => {
+    const basePos = STATION_POSITIONS[station] || STATION_POSITIONS.center
+    const count = agentsAtStation.length
+    const radius = Math.max(35, count * 15)
+    
+    agentsAtStation.forEach(({ agent, activities }, index) => {
+      const angle = (index / count) * 2 * Math.PI - Math.PI / 2
+      const offset = {
+        x: Math.cos(angle) * radius,
+        y: Math.sin(angle) * radius
+      }
+      
+      positions[agent.id] = {
+        x: basePos.x + offset.x,
+        y: basePos.y + offset.y,
+        station: station,
+        isPrimary: true
+      }
+      
+      activities.slice(1).forEach((activity, ghostIndex) => {
+        const ghostPos = STATION_POSITIONS[activity.station] || STATION_POSITIONS.center
+        const ghostAngle = ghostIndex * 1.5
+        const ghostOffset = {
+          x: Math.cos(ghostAngle) * 25,
+          y: Math.sin(ghostAngle) * 25
+        }
+        ghosts.push({
+          id: `${agent.id}-ghost-${ghostIndex}`,
+          agentId: agent.id,
+          x: ghostPos.x + ghostOffset.x,
+          y: ghostPos.y + ghostOffset.y,
+          station: activity.station,
+          label: activity.label,
+          iconKey: agent.icon_key || agent.archetype_name || agent.id
+        })
+      })
+    })
+  })
+  
+  gameViewAgentPositions.value = positions
+  gameViewGhosts.value = ghosts
+}
+
+function animateAgentToStation(agentId) {
+  if (!network) return
+  
+  const agentPos = gameViewAgentPositions.value[agentId]
+  if (!agentPos) return
+  
+  const currentPos = network.getPositions([agentId])[agentId]
+  if (!currentPos) return
+  
+  const targetX = agentPos.x
+  const targetY = agentPos.y
+  
+  const duration = 500
+  const startTime = performance.now()
+  const startX = currentPos.x
+  const startY = currentPos.y
+  
+  function animate(currentTime) {
+    const elapsed = currentTime - startTime
+    const progress = Math.min(elapsed / duration, 1)
+    
+    const eased = 1 - Math.pow(1 - progress, 3)
+    
+    const x = startX + (targetX - startX) * eased
+    const y = startY + (targetY - startY) * eased
+    
+    network.moveNode(agentId, x, y)
+    
+    if (progress < 1) {
+      requestAnimationFrame(animate)
+    } else {
+      scheduleOverlayUpdate()
+    }
+  }
+  
+  requestAnimationFrame(animate)
 }
 
 function initNetwork() {
   if (!graphRef.value) return
 
-  const options = {
-    nodes: {
-      shape: 'box',
-      font: { size: 11, face: 'JetBrains Mono, monospace' },
-      borderWidth: 2,
-      margin: { top: 8, bottom: 8, left: 12, right: 12 },
-      widthConstraint: { maximum: 200 },
-    },
-    edges: {
-      arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-      font: { size: 9, color: '#666', strokeWidth: 2, strokeColor: '#fff' },
-      smooth: { type: 'cubicBezier', roundness: 0.3 },
-      width: 2,
-    },
-    physics: {
-      solver: 'forceAtlas2Based',
-      forceAtlas2Based: {
-        gravitationalConstant: -50,
-        centralGravity: 0.01,
-        springLength: 150,
-        springConstant: 0.02,
+  network = new Network(
+    graphRef.value,
+    { nodes: [], edges: [] },
+    {
+      nodes: {
+        font: {
+          face: 'JetBrains Mono, monospace',
+          size: 11,
+          color: '#111',
+          multi: 'md',
+        },
       },
-      stabilization: { iterations: 100 },
-    },
-    interaction: {
-      hover: true,
-      tooltipDelay: 200,
-      selectConnectedEdges: true,
-    },
-  }
-
-  network = new Network(graphRef.value, { nodes: [], edges: [] }, options)
+      edges: {
+        arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+        font: {
+          size: 9,
+          color: '#444',
+          strokeWidth: 3,
+          strokeColor: '#fff',
+          align: 'middle',
+        },
+        smooth: { type: 'dynamic' },
+      },
+      interaction: {
+        hover: false,
+        dragNodes: true,
+        dragView: true,
+        zoomView: true,
+        selectConnectedEdges: true,
+      },
+      physics: PHYSICS_OPTIONS,
+    }
+  )
 
   network.on('selectNode', (params) => {
-    if (params.nodes.length > 0) {
-      const nodeId = params.nodes[0]
-      const node = dagData.value.nodes.find(n => n.id === nodeId)
-      if (node) {
-        selectedNode.value = node
-        connectedEdges.value = getConnectedEdges(nodeId)
+    const selectedId = params.nodes[0]
+    const node = graphData.value.nodes.find((item) => item.id === selectedId)
+    if (!node) return
+    
+    if (node.node_type === 'agent') {
+      emit('select-agent', selectedId)
+    } else if (node.node_type === 'station') {
+      emit('select-station', node.station_type)
+    }
+  })
+  network.on('selectEdge', (params) => {
+    const edgeId = params.edges[0]
+    const edge = graphData.value.edges.find((e) => e.id === edgeId)
+    if (!edge) return
+    
+    const sourceId = edge.source
+    const node = graphData.value.nodes.find((n) => n.id === sourceId)
+    
+    if (node && node.node_type === 'agent') {
+      emit('select-edge', { agentId: sourceId, edgeType: edge.type, edge })
+    }
+  })
+  network.on('dragStart', (params) => {
+    dragSelection = Array.isArray(params.nodes) ? [...params.nodes] : []
+    scheduleOverlayUpdate()
+  })
+  network.on('stabilized', () => {
+    layoutStabilized = true
+    captureCurrentPositions()
+  })
+  network.on('afterDrawing', scheduleOverlayUpdate)
+  network.on('dragging', () => {
+    captureCurrentPositions()
+    scheduleOverlayUpdate()
+  })
+  network.on('zoom', () => {
+    if (network) {
+      zoomLevel.value = network.getScale()
+    }
+    scheduleOverlayUpdate()
+  })
+  network.on('dragEnd', () => {
+    if (gameViewMode.value && dragSelection.length) {
+      const draggedAgentIds = dragSelection.filter(id => 
+        graphData.value.nodes.find(n => n.id === id && n.node_type === 'agent')
+      )
+      draggedAgentIds.forEach(agentId => {
+        animateAgentToStation(agentId)
+      })
+    } else if (dragSelection.length) {
+      const draggedInputNodeIds = graphData.value.nodes
+        .filter((node) => node.node_type === 'input' && dragSelection.includes(node.id))
+        .map((node) => node.id)
+      if (draggedInputNodeIds.length) {
+        const nextPinned = new Set(pinnedNodeIds.value)
+        draggedInputNodeIds.forEach((id) => nextPinned.add(id))
+        pinnedNodeIds.value = nextPinned
       }
     }
-  })
-
-  network.on('deselectNode', () => {
-    // Keep selectedNode for detail panel — user closes manually
+    dragSelection = []
+    captureCurrentPositions()
+    scheduleOverlayUpdate()
+    network?.startSimulation()
   })
 }
 
-async function refresh() {
-  loading.value = true
-  try {
-    const data = await api.getDag(props.sessionId)
-    dagData.value = data
-    updateGraph(data)
-  } catch (e) {
-    console.error('Failed to load DAG:', e)
-  } finally {
-    loading.value = false
-  }
-}
-
-function updateGraph(data) {
+function updateGraph() {
   if (!network) return
 
-  const visNodes = (data.nodes || []).map(n => {
-    const type = n.labels?.[0] || 'Unknown'
-    const props = n.props || n.properties || {}
-    const colors = NODE_COLORS[type] || { background: '#f5f5f5', border: '#999' }
+  if (gameViewMode.value) {
+    computeGameViewPositions()
+  }
 
-    let label = type
-    if (type === 'Finding') {
-      const claim = props.claim || ''
-      label = claim.length > 40 ? claim.slice(0, 40) + '...' : claim
-    } else if (type === 'Experiment') {
-      label = props.goal?.slice(0, 40) || props.backend_type || type
-    } else if (type === 'ExperimentRun') {
-      label = `Run: ${props.status || '?'}`
-    } else if (type === 'Cluster') {
-      label = props.central_claim?.slice(0, 40) || type
-    }
-
-    return {
-      id: props.id || Math.random().toString(),
-      label,
-      color: colors,
-      title: `${type}: ${props.claim || props.goal || props.id || ''}`,
-      font: { color: '#111' },
-      // Store original data for detail panel
-      _type: type,
-      _props: props,
-    }
+  const nodeIds = graphData.value.nodes.map((node) => node.id)
+  const previousPositions = {
+    ...nodePositions.value,
+    ...network.getPositions(nodeIds),
+  }
+  const preserveLayout = nodeIds.length > 0 && nodeIds.every((id) => previousPositions[id])
+  network.setOptions({
+    physics: {
+      ...PHYSICS_OPTIONS,
+      enabled: !gameViewMode.value,
+      stabilization: {
+        ...PHYSICS_OPTIONS.stabilization,
+        enabled: !layoutStabilized && !preserveLayout && !gameViewMode.value,
+      },
+    },
   })
 
-  const visEdges = (data.edges || []).map((e, i) => {
-    const type = e.type || 'RELATED'
-    const color = EDGE_COLORS[type] || '#999'
-    const props = e.props || e.properties || {}
+  let visNodes = []
+  let visEdges = []
 
-    return {
-      id: `edge_${i}`,
-      from: e.src || e.source,
-      to: e.tgt || e.target,
-      label: type,
-      color: { color, highlight: color },
-      dashes: type === 'CONTRADICTS' ? [5, 5] : false,
-      _type: type,
-      _props: props,
-    }
-  })
+  if (gameViewMode.value) {
+    const stationNodes = graphData.value.nodes
+      .filter(node => node.node_type === 'station')
+      .map((node) => {
+        const stationType = node.station_type || 'center'
+        const position = STATION_POSITIONS[stationType] || STATION_POSITIONS.center
+        const style = NODE_STYLES.station
+        return {
+          id: node.id,
+          label: node.label || 'Station',
+          shape: 'box',
+          color: {
+            background: style.bg,
+            border: style.border,
+          },
+          borderWidth: 2,
+          margin: 12,
+          widthConstraint: { maximum: 120 },
+          font: { face: 'JetBrains Mono, monospace', size: 10, color: '#444', align: 'center' },
+          physics: false,
+          fixed: { x: true, y: true },
+          x: position.x,
+          y: position.y,
+        }
+      })
+
+    const agentNodes = graphData.value.nodes
+      .filter(node => node.node_type === 'agent')
+      .map((node) => {
+        const isSelected = props.selectedAgentId === node.id
+        const gamePos = gameViewAgentPositions.value[node.id] || { x: 0, y: 0 }
+        return {
+          id: node.id,
+          label: '',
+          shape: 'image',
+          image: getSquidIconDataUrl(node.icon_key || node.archetype_name || node.id),
+          size: isSelected ? 48 : 40,
+          shadow: isSelected ? { enabled: true, color: 'rgba(17, 17, 17, 0.24)', size: 18, x: 0, y: 0 } : false,
+          physics: false,
+          x: gamePos.x,
+          y: gamePos.y,
+        }
+      })
+
+    const ghostNodes = gameViewGhosts.value.map((ghost) => ({
+      id: ghost.id,
+      label: ghost.label,
+      shape: 'image',
+      image: getSquidIconDataUrl(ghost.iconKey),
+      size: 24,
+      opacity: 0.5,
+      physics: false,
+      fixed: { x: true, y: true },
+      x: ghost.x,
+      y: ghost.y,
+      font: { face: 'JetBrains Mono, monospace', size: 8, color: '#666', align: 'center' },
+    }))
+
+    const ghostEdges = gameViewGhosts.value.map((ghost) => ({
+      id: `ghost-edge-${ghost.id}`,
+      from: ghost.agentId,
+      to: ghost.id,
+      color: { color: 'rgba(100, 100, 100, 0.3)', opacity: 0.3 },
+      width: 1,
+      dashes: [3, 3],
+      arrows: { to: { enabled: false } },
+      smooth: { type: 'continuous' },
+    }))
+
+    visNodes = [...stationNodes, ...agentNodes, ...ghostNodes]
+    visEdges = ghostEdges
+  } else {
+    visNodes = graphData.value.nodes.map((node) => {
+      const prior = previousPositions[node.id]
+      const isSelected = props.selectedAgentId === node.id
+      const nodeType = node.node_type || 'agent'
+
+      if (nodeType === 'input') {
+        return {
+          id: node.id,
+          label: node.label || 'Research question',
+          shape: 'box',
+          color: {
+            background: NODE_STYLES.input.bg,
+            border: NODE_STYLES.input.border,
+            highlight: { background: NODE_STYLES.input.highlightBg, border: NODE_STYLES.input.highlightBorder },
+          },
+          borderWidth: 2,
+          margin: 14,
+          widthConstraint: { maximum: 260 },
+          font: {
+            face: 'JetBrains Mono, monospace',
+            size: 11,
+            color: '#111',
+            multi: 'md',
+          },
+          mass: 0.75,
+          physics: false,
+          fixed: { x: true, y: true },
+          x: INPUT_POSITION.x,
+          y: INPUT_POSITION.y,
+        }
+      }
+
+      if (nodeType === 'station') {
+        const stationType = node.station_type || 'center'
+        const position = STATION_POSITIONS[stationType] || STATION_POSITIONS.center
+        const style = NODE_STYLES.station
+        return {
+          id: node.id,
+          label: node.label || 'Station',
+          shape: 'box',
+          color: {
+            background: style.bg,
+            border: style.border,
+            highlight: { background: style.highlightBg, border: style.highlightBorder },
+          },
+          borderWidth: 2,
+          margin: 12,
+          widthConstraint: { maximum: 120 },
+          font: { face: 'JetBrains Mono, monospace', size: 10, color: '#444', align: 'center' },
+          physics: false,
+          fixed: { x: true, y: true },
+          x: position.x,
+          y: position.y,
+        }
+      }
+
+      if (nodeType === 'agent') {
+        return {
+          id: node.id,
+          label: '',
+          shape: 'image',
+          image: getSquidIconDataUrl(node.icon_key || node.archetype_name || node.id),
+          size: isSelected ? 48 : 40,
+          shadow: isSelected ? { enabled: true, color: 'rgba(17, 17, 17, 0.24)', size: 18, x: 0, y: 0 } : false,
+          ...(prior ? { x: prior.x, y: prior.y } : {}),
+        }
+      }
+
+      if (nodeType === 'finding') {
+        const showLabel = zoomLevel.value >= 0.6
+        const style = NODE_STYLES.finding
+        return {
+          id: node.id,
+          label: showLabel ? truncateLabel(node.label || node.statement || 'Finding', 35) : '',
+          shape: 'diamond',
+          color: {
+            background: style.bg,
+            border: style.border,
+            highlight: { background: style.highlightBg, border: style.highlightBorder },
+          },
+          borderWidth: isSelected ? 3 : 2,
+          size: isSelected ? 28 : 22,
+          font: { face: 'JetBrains Mono, monospace', size: 9, color: '#111', align: 'center' },
+          margin: 8,
+          ...(prior ? { x: prior.x, y: prior.y } : {}),
+        }
+      }
+
+      if (nodeType === 'experiment') {
+        const showLabel = zoomLevel.value >= 0.5
+        const style = NODE_STYLES.experiment
+        const statusShape = node.status === 'completed' ? 'hexagon' : node.status === 'failed' ? 'triangle' : 'square'
+        return {
+          id: node.id,
+          label: showLabel ? truncateLabel(node.label || node.name || 'Experiment', 30) : '',
+          shape: statusShape,
+          color: {
+            background: style.bg,
+            border: style.border,
+            highlight: { background: style.highlightBg, border: style.highlightBorder },
+          },
+          borderWidth: isSelected ? 3 : 2,
+          size: isSelected ? 26 : 20,
+          font: { face: 'JetBrains Mono, monospace', size: 9, color: '#111', align: 'center' },
+          margin: 8,
+          ...(prior ? { x: prior.x, y: prior.y } : {}),
+        }
+      }
+
+      if (nodeType === 'hypothesis') {
+        const showLabel = zoomLevel.value >= 0.7
+        const style = NODE_STYLES.hypothesis
+        return {
+          id: node.id,
+          label: showLabel ? truncateLabel(node.label || node.statement || 'Hypothesis', 40) : '',
+          shape: 'ellipse',
+          color: {
+            background: style.bg,
+            border: style.border,
+            highlight: { background: style.highlightBg, border: style.highlightBorder },
+          },
+          borderWidth: isSelected ? 3 : 2,
+          size: isSelected ? 24 : 18,
+          font: { face: 'JetBrains Mono, monospace', size: 9, color: '#111', align: 'center' },
+          margin: 10,
+          ...(prior ? { x: prior.x, y: prior.y } : {}),
+        }
+      }
+
+      if (nodeType === 'cluster') {
+        const style = NODE_STYLES.cluster
+        return {
+          id: node.id,
+          label: node.label || node.name || 'Cluster',
+          shape: 'circle',
+          color: {
+            background: style.bg,
+            border: style.border,
+            highlight: { background: style.highlightBg, border: style.highlightBorder },
+          },
+          borderWidth: 2,
+          size: node.member_count ? Math.min(60, 30 + node.member_count * 2) : 40,
+          font: { face: 'JetBrains Mono, monospace', size: 10, color: '#111', align: 'center' },
+          margin: 12,
+          ...(prior ? { x: prior.x, y: prior.y } : {}),
+        }
+      }
+
+      return {
+        id: node.id,
+        label: node.label || '',
+        shape: 'dot',
+        size: 10,
+        color: { background: '#eee', border: '#999' },
+        ...(prior ? { x: prior.x, y: prior.y } : {}),
+      }
+    })
+
+    visEdges = graphData.value.edges.map((edge) => {
+      const color = EDGE_COLORS[edge.type] || '#888'
+      if (edge.type === 'STARTS_FROM') {
+        return {
+          id: edge.id,
+          from: edge.source,
+          to: edge.target,
+          color: { color, highlight: color, opacity: 0.7 },
+          width: 0.8,
+          length: 140,
+          arrows: { to: { enabled: false } },
+          smooth: { type: 'cubicBezier', roundness: 0.15 },
+        }
+      }
+
+      if (['RUNS_EXPERIMENT', 'POSTS_FINDING', 'FORMS_HYPOTHESIS'].includes(edge.type)) {
+        const labelText = edge.summary 
+          ? `${edge.type.replace('_', ' ')}: ${edge.summary.slice(0, 40)}`
+          : `${edge.type.replace('_', ' ')} (${edge.count || 1})`
+        return {
+          id: edge.id,
+          from: edge.source,
+          to: edge.target,
+          label: labelText,
+          color: { color, highlight: color },
+          width: 1.5 + (edge.count || 1) * 0.3,
+          arrows: { to: { enabled: true, scaleFactor: 0.4 } },
+          smooth: { type: 'curvedCW', roundness: 0.2 },
+        }
+      }
+
+      if (edge.type === 'QUESTIONS') {
+        return {
+          id: edge.id,
+          from: edge.source,
+          to: edge.target,
+          label: edge.count > 1 ? `questions (${edge.count})` : 'questions',
+          color: { color, highlight: color },
+          width: 1.2,
+          dashes: [5, 5],
+          arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+        }
+      }
+
+      if (edge.type === 'CONTRADICTS' || edge.type === 'REFUTES') {
+        return {
+          id: edge.id,
+          from: edge.source,
+          to: edge.target,
+          label: edge.count > 1 ? `${edge.type} (${edge.count})` : edge.type,
+          color: { color, highlight: color },
+          width: Math.min(5, 1.5 + (edge.count || 1)),
+          dashes: [8, 4],
+          arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+        }
+      }
+
+      if (edge.type === 'CITES') {
+        return {
+          id: edge.id,
+          from: edge.source,
+          to: edge.target,
+          label: edge.count > 1 ? `cites (${edge.count})` : 'cites',
+          color: { color, highlight: color, opacity: 0.6 },
+          width: 1,
+          arrows: { to: { enabled: true, scaleFactor: 0.4 } },
+        }
+      }
+
+      return {
+        id: edge.id,
+        from: edge.source,
+        to: edge.target,
+        label: edge.count > 1 ? `${edge.type} (${edge.count})` : edge.type,
+        color: { color, highlight: color },
+        width: Math.min(5, 1.5 + (edge.count || 1)),
+      }
+    })
+  }
 
   network.setData({ nodes: visNodes, edges: visEdges })
-  nodeCount.value = visNodes.length
-  edgeCount.value = visEdges.length
-
-  // Store for detail panel lookups
-  dagData.value.nodes = visNodes.map(n => ({
-    id: n.id,
-    label: n.label,
-    type: n._type,
-    props: n._props,
-  }))
-  dagData.value.edges = visEdges.map(e => ({
-    id: e.id,
-    from: e.from,
-    to: e.to,
-    type: e._type,
-    props: e._props,
-  }))
+  captureCurrentPositions()
+  
+  if (gameViewMode.value && Object.keys(gameViewAgentPositions.value).length > 0) {
+    const agentIds = Object.keys(gameViewAgentPositions.value)
+    agentIds.forEach(agentId => {
+      const pos = gameViewAgentPositions.value[agentId]
+      if (pos && network) {
+        network.moveNode(agentId, pos.x, pos.y)
+      }
+    })
+  }
+  
+  if (!gameViewMode.value) {
+    network.startSimulation()
+  }
+  syncExternalSelection()
+  scheduleOverlayUpdate()
 }
 
-function getConnectedEdges(nodeId) {
-  return (dagData.value.edges || [])
-    .filter(e => e.from === nodeId || e.to === nodeId)
-    .map(e => ({
-      id: e.id,
-      type: e.type,
-      direction: e.from === nodeId ? '→ outgoing' : '← incoming',
-      otherId: e.from === nodeId ? e.to : e.from,
-      counter_claim: e.props?.counter_claim,
-    }))
+function syncExternalSelection() {
+  if (!network || !props.selectedAgentId) return
+  const node = graphData.value.nodes.find((item) => item.id === props.selectedAgentId)
+  if (!node || node.node_type !== 'agent') return
+  network.selectNodes([props.selectedAgentId])
 }
 
 function fitView() {
-  if (network) network.fit({ animation: true })
+  if (network) {
+    network.fit({ animation: true })
+  }
 }
 
-function confClass(c) {
-  if (!c) return 'weak'
-  if (c >= 0.85) return 'high'
-  if (c >= 0.65) return 'moderate'
-  if (c >= 0.45) return 'tentative'
-  return 'weak'
+function captureCurrentPositions() {
+  if (!network) return
+  const nodeIds = graphData.value.nodes.map((node) => node.id)
+  if (!nodeIds.length) return
+  nodePositions.value = {
+    ...nodePositions.value,
+    ...network.getPositions(nodeIds),
+  }
+}
+
+function scheduleOverlayUpdate() {
+  if (overlayFrame) {
+    cancelAnimationFrame(overlayFrame)
+  }
+  overlayFrame = requestAnimationFrame(() => {
+    overlayFrame = null
+    updateOverlayPositions()
+  })
+}
+
+function startOverlayTracking() {
+  stopOverlayTracking()
+  const tick = () => {
+    overlayTrackingFrame = requestAnimationFrame(tick)
+    updateOverlayPositions()
+  }
+  overlayTrackingFrame = requestAnimationFrame(tick)
+}
+
+function stopOverlayTracking() {
+  if (overlayTrackingFrame) {
+    cancelAnimationFrame(overlayTrackingFrame)
+    overlayTrackingFrame = null
+  }
+}
+
+function updateOverlayPositions() {
+  if (!network) return
+  const agentNodes = graphData.value.nodes.filter((node) => node.node_type === 'agent')
+  if (!agentNodes.length) {
+    overlayItems.value = []
+    return
+  }
+  const positions = network.getPositions(agentNodes.map((node) => node.id))
+  overlayItems.value = agentNodes.map((node) => {
+    const canvasPoint = positions[node.id]
+    if (!canvasPoint) {
+      return null
+    }
+    const domPoint = network.canvasToDOM(canvasPoint)
+    return {
+      id: node.id,
+      left: domPoint.x,
+      top: domPoint.y - 38,
+      text: summarizeAgentActivity(node),
+    }
+  }).filter(Boolean)
+}
+
+function summarizeAgentActivity(node) {
+  const latestEvent = normalizedEvents.value.find((event) => {
+    return event?.agent_id === node.id
+  })
+  if (!latestEvent) {
+    return node.current_status_text || (node.status === 'sleeping' ? 'sleeping' : 'researching')
+  }
+
+  if (latestEvent.status_text) {
+    return shortText(latestEvent.status_text, 28)
+  }
+
+  const kind = latestEvent.kind
+  const payload = latestEvent.payload || {}
+  if (kind === 'search_completed') return `searching: ${shortText(payload.query || latestEvent.summary, 28)}`
+  if (kind === 'source_ingested') return 'reading source'
+  if (kind === 'note_created') return 'writing notes'
+  if (kind === 'assumption_created') return 'stating assumptions'
+  if (kind === 'hypothesis_created') return 'forming hypothesis'
+  if (kind === 'finding_created') return 'posting finding'
+  if (kind === 'relation_created') return 'linking claims'
+  if (kind === 'experiment_queued') return 'queueing experiment'
+  if (kind === 'experiment_started') return 'running sandbox'
+  if (kind === 'experiment_completed') return 'sandbox complete'
+  if (kind === 'experiment_failed') return 'sandbox failed'
+  if (kind === 'reviewed_hypothesis') return `review: ${shortText(payload.verdict || 'done', 20)}`
+  if (kind === 'paused') return 'paused'
+  if (kind === 'error') return 'error'
+  return node.current_status_text || latestEvent.title || 'working'
+}
+
+function shortText(value, maxLength) {
+  const text = String(value || '').trim()
+  if (!text) return 'working'
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text
+}
+
+function truncateLabel(value, maxLength) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text
 }
 
 onMounted(async () => {
   await nextTick()
   initNetwork()
-  await refresh()
-  if (props.autoRefresh) {
-    refreshTimer = setInterval(refresh, props.refreshInterval)
-  }
+  startOverlayTracking()
+  updateGraph()
 })
 
 onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
-  if (network) network.destroy()
+  if (overlayFrame) {
+    cancelAnimationFrame(overlayFrame)
+  }
+  stopOverlayTracking()
+  if (network) {
+    network.destroy()
+  }
 })
 
-watch(() => props.sessionId, () => refresh())
+watch(
+  () => props.sessionId,
+  async () => {
+    reportOpen.value = false
+    nodePositions.value = {}
+    pinnedNodeIds.value = new Set()
+    layoutStabilized = false
+    await nextTick()
+    updateGraph()
+  }
+)
+
+watch(
+  () => props.graph,
+  () => {
+    updateGraph()
+  },
+  { deep: true }
+)
+
+watch(() => props.selectedAgentId, () => {
+  syncExternalSelection()
+  scheduleOverlayUpdate()
+})
+
+watch(
+  () => normalizedEvents.value,
+  () => {
+    if (gameViewMode.value) {
+      computeGameViewPositions()
+      updateGraph()
+    }
+    scheduleOverlayUpdate()
+  },
+  { deep: true }
+)
+
+watch(gameViewMode, (enabled) => {
+  if (enabled) {
+    computeGameViewPositions()
+  }
+  updateGraph()
+})
 </script>
 
 <style scoped>
-.graph-panel { position: relative; height: 100%; display: flex; flex-direction: column; }
-.graph-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #eee; }
-.graph-header h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin: 0; }
-.graph-controls { display: flex; gap: 8px; align-items: center; }
-.graph-controls button { padding: 4px 10px; border: 1px solid #111; background: #fff; font-family: inherit; font-size: 10px; cursor: pointer; text-transform: uppercase; }
-.graph-controls button:hover { background: #f5f5f5; }
-.legend { display: flex; gap: 8px; margin-left: 12px; }
-.legend-item { font-size: 9px; text-transform: uppercase; padding: 2px 6px; }
-.legend-item.finding { background: #e8f5e9; color: #2e7d32; }
-.legend-item.experiment { background: #e3f2fd; color: #1565c0; }
-.legend-item.cluster { background: #fce4ec; color: #c62828; }
-.graph-stats { padding: 4px 12px; font-size: 10px; color: #666; border-bottom: 1px solid #f0f0f0; display: flex; gap: 12px; }
-.graph-canvas { flex: 1; min-height: 400px; }
-
-/* Node detail panel */
-.node-detail { position: absolute; top: 80px; right: 12px; width: 320px; max-height: calc(100% - 100px); background: #fff; border: 1px solid #ddd; overflow-y: auto; z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-.detail-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #eee; }
-.detail-type { font-size: 10px; text-transform: uppercase; padding: 2px 6px; font-weight: 600; }
-.detail-type.Finding { background: #e8f5e9; color: #2e7d32; }
-.detail-type.Experiment { background: #e3f2fd; color: #1565c0; }
-.detail-type.ExperimentRun { background: #fff3e0; color: #e65100; }
-.detail-type.Cluster { background: #fce4ec; color: #c62828; }
-.detail-id { font-family: monospace; font-size: 10px; color: #999; flex: 1; }
-.close-btn { border: none; background: none; font-size: 16px; cursor: pointer; color: #999; }
-.close-btn:hover { color: #111; }
-.detail-body { padding: 12px; }
-.claim { font-size: 12px; margin-bottom: 8px; line-height: 1.4; }
-.meta { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.conf-badge { font-family: monospace; font-size: 10px; padding: 1px 6px; font-weight: 600; }
-.conf-badge.high { background: #e8f5e9; color: #2e7d32; }
-.conf-badge.moderate { background: #e3f2fd; color: #1565c0; }
-.conf-badge.tentative { background: #fff3e0; color: #e65100; }
-.conf-badge.weak { background: #fce4ec; color: #c62828; }
-.evidence, .tier, .verified { font-size: 10px; color: #666; }
-.verified { color: #2e7d32; font-weight: 600; }
-.rationale { font-size: 11px; color: #555; font-style: italic; margin-bottom: 8px; }
-.sources { margin-bottom: 8px; }
-.source-url { font-size: 9px; color: #1565c0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-info { font-size: 10px; color: #999; }
-.goal { font-size: 12px; margin-bottom: 8px; }
-.status-badge { font-size: 10px; padding: 1px 6px; text-transform: uppercase; }
-.status-badge.pending { background: #fff3e0; color: #e65100; }
-.status-badge.running { background: #e3f2fd; color: #1565c0; }
-.status-badge.completed { background: #e8f5e9; color: #2e7d32; }
-.status-badge.failed { background: #fce4ec; color: #c62828; }
-.generic-detail pre { font-size: 10px; background: #fafafa; padding: 8px; overflow-x: auto; }
-.detail-edges { border-top: 1px solid #eee; padding: 8px 12px; }
-.detail-edges h5 { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #666; margin-bottom: 6px; }
-.edge-item { display: flex; gap: 6px; align-items: center; font-size: 10px; padding: 2px 0; }
-.edge-type { padding: 1px 4px; font-weight: 600; font-size: 9px; text-transform: uppercase; }
-.edge-type.supports { background: #e8f5e9; color: #2e7d32; }
-.edge-type.contradicts { background: #fce4ec; color: #c62828; }
-.edge-type.extends { background: #e3f2fd; color: #1565c0; }
-.edge-type.refutes { background: #fff3e0; color: #e65100; }
-.edge-type.produced_by { background: #fff8e1; color: #ff8f00; }
-.edge-type.tested { background: #e0f7fa; color: #00838f; }
-.edge-dir { color: #999; }
-.edge-other { font-family: monospace; color: #555; }
-.counter-claim { font-size: 9px; color: #c62828; font-style: italic; }
+.graph-panel {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.graph-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eee;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.96);
+}
+.header-copy {
+  min-width: 0;
+}
+.graph-header h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.question {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #666;
+  max-width: 520px;
+}
+.graph-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.graph-controls button,
+.close-btn {
+  padding: 5px 10px;
+  border: 1px solid #111;
+  background: #fff;
+  font-family: inherit;
+  font-size: 10px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.graph-controls button:hover,
+.close-btn:hover {
+  background: #f5f5f5;
+}
+.graph-controls button.active {
+  background: #111;
+  color: #fff;
+}
+.graph-canvas {
+  flex: 1;
+  min-height: 400px;
+  background: #fff;
+}
+.agent-overlays {
+  position: absolute;
+  inset: 48px 0 0 0;
+  pointer-events: none;
+}
+.agent-overlay {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  max-width: 160px;
+  padding: 3px 8px;
+  border: 1px solid #ddd;
+  background: rgba(255, 255, 255, 0.96);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+}
+.agent-overlay.selected {
+  border-color: #111;
+  color: #111;
+}
+.report-overlay {
+  position: absolute;
+  top: 72px;
+  right: 16px;
+  bottom: 16px;
+  width: min(460px, calc(100% - 32px));
+  pointer-events: none;
+}
+.report-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #ddd;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.14);
+  pointer-events: auto;
+}
+.report-shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eee;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.report-shell :deep(.report-panel) {
+  margin: 0;
+  padding: 12px;
+  min-height: 0;
+  overflow: auto;
+}
 </style>

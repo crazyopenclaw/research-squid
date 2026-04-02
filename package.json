@@ -5,10 +5,12 @@
   "scripts": {
     "setup": "python scripts/setup.py",
     "dev": "python scripts/dev.py",
+    "dev:clean": "python scripts/dev.py --kill-ports 3000 8000",
+    "kill-ports": "python scripts/kill_ports.py 3000 8000",
     "frontend": "cd frontend && npm run dev",
-    "backend": "set SQUID_MOCK_LLM=true && uvicorn squid.coordinator.app:app --reload --port 8000",
+    "backend": "cd backend && uvicorn src.api.app:app --reload --port 8000",
     "build": "cd frontend && npm run build",
-    "test": "python -c \"import os; os.environ['SQUID_MOCK_LLM']='true'; exec(open('tests/test_e2e.py').read())\"",
-    "docker": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d"
+    "test": ".\\.venv\\Scripts\\python.exe -m py_compile backend\\run_server.py backend\\src\\api\\app.py backend\\src\\api\\session_manager.py backend\\src\\graph\\queries.py",
+    "docker": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d neo4j postgres"
   }
 }

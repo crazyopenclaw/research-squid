@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+
+# Pre-install a curated set of safe scientific libraries.
+# Experiments can only use these — no arbitrary pip installs at runtime.
+RUN pip install --no-cache-dir \
+    numpy \
+    pandas \
+    scipy \
+    matplotlib \
+    scikit-learn \
+    requests \
+    sympy \
+    networkx \
+    statsmodels
+
+WORKDIR /sandbox
+
+COPY src/sandbox/templates/python_runner.py /sandbox/runner.py
+
+ENTRYPOINT ["python", "/sandbox/runner.py"]
