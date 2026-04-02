@@ -3,12 +3,12 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "setup": "bash scripts/setup.sh",
-    "dev": "bash scripts/dev.sh",
+    "setup": "python scripts/setup.py",
+    "dev": "python scripts/dev.py",
     "frontend": "cd frontend && npm run dev",
-    "backend": "SQUID_MOCK_LLM=true uvicorn squid.coordinator.app:app --reload --port 8000",
+    "backend": "set SQUID_MOCK_LLM=true && uvicorn squid.coordinator.app:app --reload --port 8000",
     "build": "cd frontend && npm run build",
-    "test": "SQUID_MOCK_LLM=true python3 tests/test_e2e.py",
+    "test": "python -c \"import os; os.environ['SQUID_MOCK_LLM']='true'; exec(open('tests/test_e2e.py').read())\"",
     "docker": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d"
   }
 }
