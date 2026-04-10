@@ -718,7 +718,7 @@ def display_event(event: Event) -> None:
         case EventType.STATE_SNAPSHOT:
             if not payload:
                 return
-            interesting = _kv(payload, ["iteration", "status", "budget_remaining", "budget_total"])
+            interesting = _kv(payload, ["iteration", "status", "budget_remaining_usd", "budget_total_usd"])
             if interesting:
                 console.print(f"  [{color}]State snapshot:[/] {interesting}")
 

@@ -246,6 +246,11 @@ research-squid/
 - Pauses agents with consecutive empty cycles
 - Decides loop termination
 
+### Synthesizer (method, not agent class)
+- Implemented as `_synthesize()` on `InstituteGraphBuilder` — not a separate agent
+- Calls `self._llm.complete()` directly with prompt templates
+- No persona, no budget tracking, no workspace
+
 ---
 
 ## 🔄 Orchestration (LangGraph)

@@ -717,16 +717,8 @@ class DebateCycleBuilder:
             },
         ))
 
-        budget = state.get("budget_remaining", 0)
-        # Estimate budget consumed: clusters * avg reviews + adjudications
-        num_agents = len([
-            a for a in state.get("agents", []) if a["status"] == "active"
-        ])
-        debate_budget_used = max(1, num_agents // 3)
-
         return {
             "debate_queue": debate_queue,
-            "budget_remaining": max(0, budget - debate_budget_used),
         }
 
     async def _legacy_review(

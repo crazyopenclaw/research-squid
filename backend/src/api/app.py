@@ -146,7 +146,7 @@ async def _build_overview(
             "title": item.get("question", ""),
             "priority": item.get("priority"),
             "success_criteria": item.get("success_criteria", ""),
-            "assigned_agent": item.get("assigned_agent", ""),
+            "assigned_agent": item.get("assigned_agent", []),
             "coverage": float(coverage_map.get(item.get("id"), 0.0)),
         }
         for item in sorted(subproblems, key=lambda row: row.get("priority", 999))
@@ -201,10 +201,10 @@ async def _build_overview(
     else:
         spent = max(
             0,
-            float(snapshot.get("budget_total", 0) or 0)
-            - float(snapshot.get("budget_remaining", 0) or 0),
+            float(snapshot.get("budget_total_usd", snapshot.get("budget_total", 0)) or 0)
+            - float(snapshot.get("budget_remaining_usd", snapshot.get("budget_remaining", 0)) or 0),
         )
-    budget_total = float(snapshot.get("budget_total", 0) or 0)
+    budget_total = float(snapshot.get("budget_total_usd", snapshot.get("budget_total", 0)) or 0)
     tokens_used = int(snapshot.get("tokens_used", 0) or 0)
     budget_warning = bool(snapshot.get("budget_warning", False))
     llm_budget_usd = float(snapshot.get("llm_budget_usd", 0) or 0)
@@ -234,7 +234,7 @@ async def _build_overview(
         "budget": {
             "spent": spent,
             "total": float(budget_total),
-            "remaining": float(snapshot.get("budget_remaining", 0) or 0),
+            "remaining": float(snapshot.get("budget_remaining_usd", snapshot.get("budget_remaining", 0)) or 0),
             "tokens_used": tokens_used,
             "dollars_used": dollars_used,
             "dollars_budget": llm_budget_usd,
@@ -725,17 +725,17 @@ def create_app() -> FastAPI:
 
         state = session.get("state", {})
         snapshot = state.get("snapshot", {})
-        current_total = int(snapshot.get("budget_total", 500) or 500)
-        current_remaining = int(snapshot.get("budget_remaining", 0) or 0)
+        current_total = int(snapshot.get("budget_total_usd", snapshot.get("budget_total", 500)) or 500)
+        current_remaining = int(snapshot.get("budget_remaining_usd", snapshot.get("budget_remaining", 0)) or 0)
 
-        snapshot["budget_total"] = current_total + additional_budget
-        snapshot["budget_remaining"] = current_remaining + additional_budget
+        snapshot["budget_total_usd"] = current_total + additional_budget
+        snapshot["budget_remaining_usd"] = current_remaining + additional_budget
         snapshot["budget_warning"] = False
 
         return {
             "session_id": session_id,
-            "budget_total": snapshot["budget_total"],
-            "budget_remaining": snapshot["budget_remaining"],
+            "budget_total_usd": snapshot["budget_total_usd"],
+            "budget_remaining_usd": snapshot["budget_remaining_usd"],
             "added_budget": additional_budget,
         }
 

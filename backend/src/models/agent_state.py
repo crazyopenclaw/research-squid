@@ -21,7 +21,7 @@ class Subproblem(TypedDict):
     question: str
     priority: int  # 1 = highest
     success_criteria: str
-    assigned_agent: str  # agent_id
+    assigned_agent: list[str]  # agent_ids
 
 
 class AgentInfo(TypedDict):
@@ -42,8 +42,8 @@ class AgentInfo(TypedDict):
     persona: dict[str, Any]
 
     # Per-agent budget tracking
-    budget_allocated: int
-    budget_used: int
+    budget_allocated_usd: float
+    budget_used_usd: float
 
     # Performance tracking (used by controller + reputation)
     consecutive_empty_iterations: int
@@ -98,12 +98,13 @@ class InstituteState(TypedDict, total=False):
     max_iterations: int
 
     # Budget management — decremented on every LLM call
-    budget_remaining: int
-    budget_total: int
+    budget_remaining_usd: float
+    budget_total_usd: float
     
     # Enhanced budget tracking
     tokens_used: int
     dollars_used: float
+    llm_budget_usd: float
     budget_warning: bool  # True when at 90% threshold
 
     # Artifacts created in the current iteration (IDs only)
@@ -153,7 +154,7 @@ class SquidState(TypedDict, total=False):
     subproblem: Subproblem
     session_id: str
     iteration: int
-    budget_remaining: int
+    budget_remaining_usd: float
 
     # Persona — serialized dict from AgentPersona.model_dump()
     persona: dict[str, Any]

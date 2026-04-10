@@ -35,7 +35,6 @@ from src.models.agent_state import AgentInfo, InstituteState, BeliefCluster
 from src.models.archetype import Archetype, spawn_persona_from_archetype
 from src.models.events import Event, EventType
 from src.orchestration.debate_cycle import DebateCycleBuilder
-from src.orchestration.research_cycle import ResearchCycleBuilder
 from src.rag.indexer import RAGIndexer
 from src.rag.retriever import RAGRetriever
 from src.sandbox.runner import SandboxRunner
@@ -97,18 +96,11 @@ class InstituteGraphBuilder:
             llm, queries, event_bus, config=self._config
         )
 
-        # Build sub-graphs
-        self._research_builder = ResearchCycleBuilder(
-            llm, graph, queries, retriever, indexer, event_bus,
-            sandbox, tavily, arxiv_search,
-            config=self._config,
-            workspace_manager=workspace_manager,
-        )
         self._debate_builder = DebateCycleBuilder(
             llm, graph, queries, event_bus, config=self._config,
         )
 
-    def _update_budget_state(
+    async def _update_budget_state(
         self,
         state: InstituteState,
     ) -> dict[str, Any]:
@@ -131,38 +123,34 @@ class InstituteGraphBuilder:
         dollars_used = state.get("dollars_used", 0.0) + self._llm.total_cost
         
         # Connect user's dollar budget
-        llm_budget_usd = float(state["llm_budget_usd"])
-        budget_total = state.get("budget_total", self._config.default_budget)
+        budget_total_usd = float(state.get("budget_total_usd", self._config.default_budget_usd))
 
         budget_warning = state.get("budget_warning", False)
-        # Use dollars instead of calls for tracking usage_ratio
-        usage_ratio = dollars_used / max(0.01, llm_budget_usd)
+        # Use dollars for tracking usage_ratio
+        usage_ratio = dollars_used / max(0.01, budget_total_usd)
 
         if usage_ratio >= 0.9 and not budget_warning:
             budget_warning = True
-            import asyncio
-            asyncio.create_task(self._bus.publish(Event(
+            await self._bus.publish(Event(
                 event_type=EventType.BUDGET_WARNING,
                 session_id=state.get("session_id", ""),
                 payload={
-                    "budget_total": llm_budget_usd,
+                    "budget_total_usd": budget_total_usd,
                     "tokens_used": tokens_used,
                     "dollars_used": dollars_used,
-                    "llm_budget_usd": llm_budget_usd,
                     "percentage": round(usage_ratio * 100, 1),
                 },
-            )))
+            ))
 
         # Track remaining budget in dollars
-        budget_remaining = max(0.0, llm_budget_usd - dollars_used)
+        budget_remaining_usd = max(0.0, budget_total_usd - dollars_used)
 
         return {
-            "budget_total": llm_budget_usd,
-            "budget_remaining": budget_remaining,
+            "budget_total_usd": budget_total_usd,
+            "budget_remaining_usd": budget_remaining_usd,
             "tokens_used": tokens_used,
             "dollars_used": dollars_used,
             "budget_warning": budget_warning,
-            "llm_budget_usd": llm_budget_usd,
         }
 
     def build(self) -> Any:
@@ -213,10 +201,11 @@ class InstituteGraphBuilder:
         self, state: InstituteState
     ) -> dict[str, Any]:
         """Initialize a new research session."""
+        self._llm.reset_usage()
         session_id = state.get("session_id") or uuid4().hex[: self._config.session_id_length]
 
         # Connect user's dollar budget
-        llm_budget_usd = float(state["llm_budget_usd"])
+        budget_total_usd = float(state.get("budget_total_usd", self._config.default_budget_usd))
 
         await self._bus.publish(Event(
             event_type=EventType.RESEARCH_STARTED,
@@ -230,11 +219,10 @@ class InstituteGraphBuilder:
             payload={
                 "question": state.get("research_question", ""),
                 "num_agents": state.get("num_agents", self._config.default_agents),
-                "budget_total": llm_budget_usd,
-                "budget_remaining": llm_budget_usd,
+                "budget_total_usd": budget_total_usd,
+                "budget_remaining_usd": budget_total_usd,
                 "tokens_used": 0,
                 "dollars_used": 0.0,
-                "llm_budget_usd": llm_budget_usd,
                 "budget_warning": False,
                 "max_iterations": state.get("max_iterations", self._config.default_iterations),
                 "iteration": 0,
@@ -245,9 +233,8 @@ class InstituteGraphBuilder:
         return {
             "session_id": session_id,
             "iteration": 0,
-            "budget_total": llm_budget_usd,
-            "budget_remaining": llm_budget_usd,
-            "llm_budget_usd": llm_budget_usd,
+            "budget_total_usd": budget_total_usd,
+            "budget_remaining_usd": budget_total_usd,
             "tokens_used": 0,
             "dollars_used": 0.0,
             "budget_warning": False,
@@ -270,7 +257,7 @@ class InstituteGraphBuilder:
             "num_agents": state.get(
                 "num_agents",
                 self._default_num_agents(
-                    state.get("budget_total", self._config.default_budget)
+                    state.get("budget_total_usd", self._config.default_budget_usd)
                 ),
             ),
         }
@@ -312,8 +299,8 @@ class InstituteGraphBuilder:
         archetype_dicts = state.get("archetypes", [])
         session_id = state.get("session_id", "")
         num_agents = state.get("num_agents", len(subproblems))
-        total_budget = state.get(
-            "budget_remaining", self._config.default_budget
+        total_budget_usd = state.get(
+            "budget_remaining_usd", self._config.default_budget_usd
         )
 
         # Reconstruct Archetype models from serialized dicts
@@ -350,9 +337,9 @@ class InstituteGraphBuilder:
 
             # Per-agent budget weighted by subproblem priority
             priority_weight = (1.0 / sp["priority"]) / priority_sum
-            agent_budget = max(
-                self._config.min_agent_budget,
-                int(total_budget * priority_weight / max(1, num_agents // len(subproblems))),
+            agent_budget_usd = max(
+                self._config.min_agent_budget_usd,
+                total_budget_usd * priority_weight / max(1, num_agents // len(subproblems)),
             )
 
             # Create agent workspace if workspace layer is active
@@ -373,15 +360,15 @@ class InstituteGraphBuilder:
                 subproblem_id=sp["id"],
                 status="active",
                 persona=persona.model_dump(),
-                budget_allocated=agent_budget,
-                budget_used=0,
+                budget_allocated_usd=agent_budget_usd,
+                budget_used_usd=0.0,
                 consecutive_empty_iterations=0,
                 workspace_path=workspace_path,
             ))
 
-            # Update subproblem with assigned agent (first one wins)
-            if not sp["assigned_agent"]:
-                sp["assigned_agent"] = agent_id
+            # Update subproblem with assigned agent
+            if agent_id not in sp["assigned_agent"]:
+                sp["assigned_agent"].append(agent_id)
 
             await self._bus.publish(Event(
                 event_type=EventType.AGENT_SPAWNED,
@@ -417,9 +404,9 @@ class InstituteGraphBuilder:
             Archetype(**data) for data in self._config.fallback_archetypes
         ]
 
-    def _default_num_agents(self, budget_total: int) -> int:
+    def _default_num_agents(self, budget_total_usd: float) -> int:
         """Infer a reasonable agent count from budget when one is not supplied."""
-        derived = budget_total // self._config.budget_per_agent_target
+        derived = int(budget_total_usd // self._config.budget_per_agent_target)
         return derived or self._config.default_agents
 
     async def _research_cycle(
@@ -437,17 +424,6 @@ class InstituteGraphBuilder:
         from src.agents.squid import SquidAgent
         from src.models.agent_state import SquidState
 
-        squid = SquidAgent(
-            llm=self._llm,
-            graph=self._graph,
-            retriever=self._retriever,
-            indexer=self._indexer,
-            event_bus=self._bus,
-            tavily=self._tavily,
-            arxiv_search=self._arxiv,
-            config=self._config,
-        )
-
         # Build SquidState for each active agent
         tasks = []
         active_agents = []
@@ -456,8 +432,8 @@ class InstituteGraphBuilder:
                 continue
 
             # Skip agents with exhausted per-agent budgets
-            if agent.get("budget_used", 0) >= agent.get(
-                "budget_allocated", float("inf")
+            if agent.get("budget_used_usd", 0) >= agent.get(
+                "budget_allocated_usd", float("inf")
             ):
                 continue
 
@@ -470,15 +446,52 @@ class InstituteGraphBuilder:
             if not subproblem:
                 continue
 
+            # Create per-squid workspace tools if workspace is available
+            workspace_tools = None
+            session_id = state.get("session_id", "")
+            agent_id = agent["agent_id"]
+            if self._workspace_manager and agent.get("workspace_path"):
+                from src.workspace.submitter import ExperimentSubmitter
+                from src.workspace.memory_enforcer import MemoryEnforcer
+                from src.agents.workspace_tools import WorkspaceTools
+
+                opencode_server = await self._workspace_manager.get_or_start_server(
+                    agent_id, session_id
+                )
+                submitter = ExperimentSubmitter(self._graph, self._workspace_manager)
+                enforcer = MemoryEnforcer(self._workspace_manager, self._config)
+                workspace_tools = WorkspaceTools(
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    workspace_manager=self._workspace_manager,
+                    opencode_server=opencode_server,
+                    submitter=submitter,
+                    enforcer=enforcer,
+                    event_bus=self._bus,
+                )
+
+            squid = SquidAgent(
+                llm=self._llm,
+                graph=self._graph,
+                retriever=self._retriever,
+                indexer=self._indexer,
+                event_bus=self._bus,
+                tavily=self._tavily,
+                arxiv_search=self._arxiv,
+                config=self._config,
+                workspace_tools=workspace_tools,
+            )
+
             sci_state = SquidState(
                 agent_id=agent["agent_id"],
                 agent_name=agent["name"],
                 subproblem=subproblem,
-                session_id=state.get("session_id", ""),
+                session_id=session_id,
                 iteration=state.get("iteration", 0),
-                budget_remaining=state.get("budget_remaining", 0),
+                budget_remaining_usd=state.get("budget_remaining_usd", 0.0),
                 persona=agent.get("persona", {}),
                 iteration_summary=state.get("iteration_summary", ""),
+                workspace_path=agent.get("workspace_path", ""),
             )
 
             tasks.append(squid.run(sci_state))
@@ -500,7 +513,7 @@ class InstituteGraphBuilder:
             # Update per-agent budget usage and empty iteration tracking
             for ua in updated_agents:
                 if ua["agent_id"] == agent["agent_id"]:
-                    ua["budget_used"] = ua.get("budget_used", 0) + 1
+                    ua["budget_used_usd"] = ua.get("budget_used_usd", 0.0) + 1
                     produced = (
                         len(result.get("hypotheses_created", []))
                         + len(result.get("notes_created", []))
@@ -640,6 +653,8 @@ class InstituteGraphBuilder:
 
         At 100 agents this produces ~350 review calls instead of ~9,900.
         """
+        cost_before = self._llm.total_cost
+
         # Build and run the debate subgraph
         debate_graph = self._debate_builder.build()
         compiled = debate_graph.compile()
@@ -654,9 +669,10 @@ class InstituteGraphBuilder:
                 state.get("last_recluster_iteration", -1),
             ),
             "pending_experiments": result.get("pending_experiments", []),
-            "budget_remaining": result.get(
-                "budget_remaining",
-                state.get("budget_remaining", 0),
+            "budget_remaining_usd": max(
+                0.0,
+                state.get("budget_remaining_usd", 0.0)
+                - (self._llm.total_cost - cost_before)
             ),
         }
 
@@ -674,7 +690,7 @@ class InstituteGraphBuilder:
                 "controller_directives": result.get("controller_directives", []),
                 "should_stop": result.get("should_stop", False),
                 "iteration": state.get("iteration", 0),
-                "budget_remaining": budget_updates["budget_remaining"],
+                "budget_remaining_usd": budget_updates["budget_remaining_usd"],
                 "tokens_used": budget_updates["tokens_used"],
                 "dollars_used": budget_updates["dollars_used"],
                 "budget_warning": budget_updates["budget_warning"],
@@ -871,7 +887,7 @@ class InstituteGraphBuilder:
             session_id=session_id,
             payload={
                 "iterations": state.get("iteration", 0),
-                "budget_used": state.get("budget_total", 0) - state.get("budget_remaining", 0),
+                "budget_used": state.get("budget_total_usd", 0.0) - state.get("budget_remaining_usd", 0.0),
                 "report_length": len(report),
             },
         ))

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.config import Settings
+from src.workspace.access_control import AccessControl
 
 if TYPE_CHECKING:
     from src.workspace.opencode import OpenCodeServer
@@ -87,6 +88,7 @@ class WorkspaceManager:
         self._config = config
         self._bus = event_bus
         self._base = Path(config.workspace_base_path)
+        self._access = AccessControl(config, self._base)
         # Server pool: (agent_id, session_id) → OpenCodeServer
         self._servers: dict[tuple[str, str], "OpenCodeServer"] = {}
 
@@ -233,6 +235,7 @@ class WorkspaceManager:
         self, agent_id: str, session_id: str, relative_path: str
     ) -> str:
         path = self._safe_path(agent_id, session_id, relative_path)
+        self._access.assert_read(path, agent_id, session_id)
         return await asyncio.to_thread(path.read_text, encoding="utf-8")
 
     async def write_file(
@@ -253,6 +256,7 @@ class WorkspaceManager:
                 "memory.md is append-only. Use append_file() to add entries."
             )
         path = self._safe_path(agent_id, session_id, relative_path)
+        self._access.assert_write(path, agent_id, session_id)
         # Enforce max file size
         max_bytes = self._config.workspace_max_file_size_kb * 1024
         if len(content.encode("utf-8")) > max_bytes:
@@ -279,6 +283,45 @@ class WorkspaceManager:
                 f.write(content)
 
         await asyncio.to_thread(_append)
+
+    async def rewrite_file(
+        self,
+        agent_id: str,
+        session_id: str,
+        relative_path: str,
+        content: str,
+    ) -> None:
+        """
+        Rewrite a workspace file, bypassing the append-only guard.
+
+        Used by MemoryEnforcer for pruning — replaces the file content
+        entirely. Enforces max file size and publishes a rewrite event.
+        """
+        path = self._safe_path(agent_id, session_id, relative_path)
+        if not path.exists():
+            return
+
+        self._access.assert_write(path, agent_id, session_id)
+
+        max_bytes = self._config.workspace_max_file_size_kb * 1024
+        if len(content.encode("utf-8")) > max_bytes:
+            content = content.encode("utf-8")[:max_bytes].decode(
+                "utf-8", errors="replace"
+            )
+
+        await asyncio.to_thread(path.write_text, content, encoding="utf-8")
+
+        from src.models.events import Event, EventType
+        await self._bus.publish(Event(
+            event_type=EventType.WORKSPACE_FILE_WRITTEN,
+            artifact_id=f"{agent_id}:{relative_path}",
+            session_id=session_id,
+            payload={
+                "agent_id": agent_id,
+                "path": relative_path,
+                "operation": "rewrite",
+            },
+        ))
 
     async def list_files(self, agent_id: str, session_id: str) -> list[str]:
         """List all files in the workspace (excluding .history/)."""

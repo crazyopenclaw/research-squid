@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.config import Settings, settings as default_settings
+from src.config import Settings
 from src.events.bus import EventBus
 from src.graph.queries import GraphQueries
 from src.graph.repository import GraphRepository
@@ -28,9 +28,7 @@ class ReviewOutput(BaseModel):
 
     verdict: str = ""
     reasoning: str = ""
-    confidence: float = Field(
-        default_factory=lambda: default_settings.review_default_confidence
-    )
+    confidence: float = 0.5
     weaknesses: list[str] = Field(default_factory=list)
     strengths: list[str] = Field(default_factory=list)
     relations: list[dict[str, Any]] = Field(default_factory=list)
@@ -174,7 +172,7 @@ class ReviewerAgent:
         finding = Finding(
             text=output.reasoning,
             hypothesis_id=hypothesis_id,
-            conclusion_type=conclusion_map.get(output.verdict, output.verdict or "inconclusive"),
+            conclusion_type=conclusion_map.get(output.verdict, "inconclusive"),
             created_by=reviewer_agent_id,
             confidence=output.confidence,
         )
@@ -217,6 +215,11 @@ class ReviewerAgent:
             spec = ExperimentSpec(
                 code=exp_data.get("code", ""),
                 expected_outcome=exp_data.get("expected_outcome", ""),
+                timeout_seconds=exp_data.get(
+                    "timeout_seconds",
+                    self._config.default_experiment_timeout_seconds,
+                ),
+                requirements=exp_data.get("requirements", []),
             )
             experiment = Experiment(
                 hypothesis_id=hypothesis_id,

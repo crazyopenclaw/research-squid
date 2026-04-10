@@ -18,7 +18,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
-    """Application-wide settings, populated from environment variables."""
+    """Application-wide settings, populated from environment variables.
+
+    NOTE: Settings is used as both config source and DI container.
+    New code should accept Settings as a constructor parameter, not
+    import the singleton. See: docs/architecture/inconsistencies.md #18
+    """
 
     model_config = SettingsConfigDict(
         env_file=str(REPO_ROOT / ".env"),
@@ -96,6 +101,8 @@ class Settings(BaseSettings):
 
     # Sandbox
     sandbox_image: str = "squid-sandbox:latest"
+    # Hard kill timeout for the Docker container (seconds).
+    # If the process inside doesn't exit within this time, Docker kills it.
     sandbox_timeout: int = 60
     sandbox_memory_limit: str = "256m"
     sandbox_network: str = "none"
@@ -104,13 +111,18 @@ class Settings(BaseSettings):
     sandbox_stderr_cap: int = 5000
     sandbox_cpu_period: int = 100000
     sandbox_cpu_quota: int = 50000
+    # Default timeout for ExperimentSpec (seconds).
+    # Individual experiments can override this in their spec.
+    # Must be <= sandbox_timeout to ensure Docker kills the container
+    # before the experiment timeout fires.
     default_experiment_timeout_seconds: int = 60
 
     # Research defaults
     default_agents: int = 3
-    default_budget: int = 500
+    default_budget_usd: float = 10.0
     default_iterations: int = 5
-    budget_per_agent_target: int = 100
+    budget_per_agent_target: float = 2.0  # Target USD per agent
+    min_agent_budget_usd: float = 1.0     # Minimum USD per agent
     session_id_length: int = 12
     data_dir: str = str(REPO_ROOT / "data" / "sources")
 

@@ -5,7 +5,6 @@ Ensures agents actually update their memory each cycle and that the
 file doesn't grow unboundedly (archives older entries when needed).
 """
 
-import asyncio
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -193,9 +192,7 @@ class MemoryEnforcer:
         await self._manager.append_file(
             agent_id, session_id, "memory.archive.md", archive_section
         )
-        # Rewrite memory.md (direct path write to bypass append-only guard)
-        root = self._manager.workspace_root(agent_id, session_id)
-        memory_path = root / "memory.md"
-        await asyncio.to_thread(
-            memory_path.write_text, new_content, encoding="utf-8"
+        # Rewrite memory.md through WorkspaceManager (enforces size limits)
+        await self._manager.rewrite_file(
+            agent_id, session_id, "memory.md", new_content
         )

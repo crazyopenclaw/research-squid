@@ -337,7 +337,7 @@ CONTROLLER_EVALUATE = """Evaluate the current state of research.
 {iteration} of {max_iterations}
 
 === BUDGET ===
-{budget_remaining} of {budget_total} calls remaining
+{budget_remaining} of ${budget_total} USD remaining
 
 === GRAPH STATISTICS ===
 {graph_stats}

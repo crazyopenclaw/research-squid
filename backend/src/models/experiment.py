@@ -12,7 +12,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from src.config import settings as default_settings
 from src.models.base import BaseArtifact
 
 
@@ -37,7 +36,7 @@ class ExperimentSpec(BaseModel):
         description="Pip packages needed (must be from the pre-installed allow-list).",
     )
     timeout_seconds: int = Field(
-        default_factory=lambda: default_settings.default_experiment_timeout_seconds,
+        default=60,
         ge=5,
         le=300,
         description="Max execution time before the experiment is killed.",

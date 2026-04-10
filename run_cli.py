@@ -71,9 +71,9 @@ def parse_args():
     parser.add_argument(
         "--budget",
         "-b",
-        type=int,
-        default=100,
-        help="Max LLM calls allowed (default: 100).",
+        type=float,
+        default=10.0,
+        help="Max budget in USD (default: 10.0).",
     )
     parser.add_argument(
         "--iterations",
@@ -274,7 +274,7 @@ async def _async_main() -> None:
             question=args.question,
             sources=args.sources,
             num_agents=args.agents,
-            budget=args.budget,
+            budget_usd=args.budget,
             max_iterations=args.iterations,
         )
 

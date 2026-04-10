@@ -176,6 +176,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         max_retries: int | None = None,
+        model_override: str | None = None,
     ) -> T:
         """
         Send a prompt and parse the response into a Pydantic model.
@@ -224,12 +225,13 @@ class LLMClient:
             self._config.max_retries_structured
             if max_retries is None else max_retries
         )
+        model = model_override or self._model
 
         last_error: Exception | None = None
         for attempt in range(1 + retry_limit):
             start_time = time.time()
             response = await self._client.chat.completions.create(
-                model=self._model,
+                model=model,
                 messages=messages,
                 temperature=current_temperature,
                 max_tokens=current_max_tokens,
@@ -309,20 +311,16 @@ class LLMClient:
         Returns:
             An instance of response_model.
         """
-        # Temporarily swap model, call, then restore
-        original_model = self._model
-        self._model = self.resolve_model_for_persona(persona)
-        try:
-            return await self.complete_structured(
-                prompt=prompt,
-                response_model=response_model,
-                system=system,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                max_retries=max_retries,
-            )
-        finally:
-            self._model = original_model
+        model = self.resolve_model_for_persona(persona)
+        return await self.complete_structured(
+            prompt=prompt,
+            response_model=response_model,
+            system=system,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_retries=max_retries,
+            model_override=model,
+        )
 
     @staticmethod
     def _normalize_structured_json(raw: str) -> str:

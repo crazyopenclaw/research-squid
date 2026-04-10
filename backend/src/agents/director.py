@@ -166,7 +166,7 @@ class DirectorAgent:
                 question=sp.get("question", ""),
                 priority=sp.get("priority", len(subproblems) + 1),
                 success_criteria=sp.get("success_criteria", ""),
-                assigned_agent="",  # Filled in by spawn_squids
+                assigned_agent=[],  # Filled in by spawn_squids
             ))
 
         await self._bus.publish(Event(

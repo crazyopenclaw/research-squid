@@ -139,8 +139,8 @@ class ControllerAgent:
             max_iterations=state.get(
                 "max_iterations", self._config.default_iterations
             ),
-            budget_remaining=state.get("budget_remaining", 0),
-            budget_total=state.get("budget_total", self._config.default_budget),
+            budget_remaining=state.get("budget_remaining_usd", 0.0),
+            budget_total=state.get("budget_total_usd", self._config.default_budget_usd),
             graph_stats=stats_text + f"\n\n=== AGENT PERFORMANCE ===\n{agent_perf_text}",
             contradictions=contradictions_text,
         )
@@ -153,16 +153,16 @@ class ControllerAgent:
         )
 
         # Force stop if budget or iterations exhausted
-        budget = state.get("budget_remaining", 0)
+        budget_usd = state.get("budget_remaining_usd", 0.0)
         iteration = state.get("iteration", 0)
         max_iter = state.get("max_iterations", self._config.default_iterations)
 
-        force_stop = budget <= 0 or iteration >= max_iter
+        force_stop = budget_usd <= 0 or iteration >= max_iter
         should_stop = output.should_stop or force_stop
 
         if force_stop and not output.should_stop:
             output.reasoning += (
-                f" [FORCED STOP: budget={budget}, "
+                f" [FORCED STOP: budget=${budget_usd:.2f}, "
                 f"iteration={iteration}/{max_iter}]"
             )
 
@@ -185,7 +185,7 @@ class ControllerAgent:
                 for a in agents:
                     if a["agent_id"] == metrics.agent_id and a["status"] == "active":
                         a["status"] = "paused"
-                        remaining = a.get("budget_allocated", 0) - a.get("budget_used", 0)
+                        remaining = a.get("budget_allocated_usd", 0) - a.get("budget_used_usd", 0)
                         paused_budget += max(0, remaining)
 
                         await self._bus.publish(Event(

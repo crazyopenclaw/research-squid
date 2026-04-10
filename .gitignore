@@ -21,3 +21,7 @@ logs/*
 data/
 .kilo/*
 workspaces/*
+backend/graphify-out/*
+backend/graphify-out/cache/*
+.opencode/*
+graphify-out/GRAPH_REPORT.md
