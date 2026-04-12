@@ -29,6 +29,8 @@ from src.cli.display import (
     display_graph_summary,
     display_hypotheses,
     display_report,
+    start_display,
+    stop_display,
     _short,
 )
 from src.config import settings
@@ -238,6 +240,8 @@ def research(
             await service.initialize()
             console.print(f"\n[dim]Budget: {budget} calls | Agents: {agents} | Max iterations: {iterations}[/]\n")
 
+            start_display()
+
             result = await service.start_research(
                 question=question,
                 sources=sources or [],
@@ -270,6 +274,7 @@ def research(
             console.print(f"\n[red]Error: {e}[/]")
             raise
         finally:
+            stop_display()
             await service.shutdown()
 
     _run_async(_run())
